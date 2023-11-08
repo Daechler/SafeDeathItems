@@ -1,0 +1,17 @@
+name: SafeDeathItems
+version: '${project.version}'
+main: net.daechler.safedeathitems.SafeDeathItems
+api-version: '1.20'
+authors: [Daechler]
+description: Save your items in a virtual inventory when you die.
+commands:
+  deathinv:
+    description: Retrieve your items from death inventory.
+    usage: /<command>
+    permission: safeitems.claim
+    aliases: [di]
+  deathinvall:
+    description: Retrieve all your items and apply armor from death inventory.
+    permission: safeitems.all
+    usage: /<command>
+    aliases: [dia]
