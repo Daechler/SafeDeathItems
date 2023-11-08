@@ -1,114 +1,146 @@
 package net.daechler.safedeathitems;
 
+import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.PlayerDeathEvent;
-import org.bukkit.event.player.PlayerRespawnEvent;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryCloseEvent;
+import org.bukkit.event.player.PlayerCommandPreprocessEvent;
+import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
-import org.bukkit.command.Command;
-import org.bukkit.command.CommandSender;
-import org.bukkit.command.CommandExecutor;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
-public class SafeDeathItems extends JavaPlugin implements Listener, CommandExecutor {
+public class SafeDeathItems extends JavaPlugin implements Listener {
 
-    private final Map<UUID, ItemStack[]> savedInventories = new HashMap<>();
-    private final Map<UUID, Long> lastDamageTimes = new HashMap<>();
+    private final Map<UUID, ItemStack[]> deathInventories = new HashMap<>();
+    private final Map<UUID, Long> deathTimestamps = new HashMap<>();
 
     @Override
     public void onEnable() {
-        // Register the events and commands
+        Bukkit.getConsoleSender().sendMessage(ChatColor.GREEN + getName() + " has been enabled!");
         getServer().getPluginManager().registerEvents(this, this);
-        getCommand("deathinv").setExecutor(this);
-        getCommand("deathinvall").setExecutor(this);
-        // Display enable message
-        getServer().getConsoleSender().sendMessage(ChatColor.GREEN + getName() + " has been enabled!");
     }
 
     @Override
     public void onDisable() {
-        // Display disable message
-        getServer().getConsoleSender().sendMessage(ChatColor.RED + getName() + " has been disabled!");
+        Bukkit.getConsoleSender().sendMessage(ChatColor.RED + getName() + " has been disabled!");
     }
 
     @EventHandler
     public void onPlayerDeath(PlayerDeathEvent event) {
-        // Store the player's items in a virtual inventory and clear the dropped items
+        // Save the player's inventory and clear the drops
         Player player = event.getEntity();
-        savedInventories.put(player.getUniqueId(), event.getDrops().toArray(new ItemStack[0]));
-        lastDamageTimes.put(player.getUniqueId(), System.currentTimeMillis());
+        deathInventories.put(player.getUniqueId(), player.getInventory().getContents());
         event.getDrops().clear();
+        deathTimestamps.put(player.getUniqueId(), System.currentTimeMillis());
     }
 
     @EventHandler
-    public void onPlayerRespawn(PlayerRespawnEvent event) {
+    public void onPlayerCommand(PlayerCommandPreprocessEvent event) {
         Player player = event.getPlayer();
-        // If the player has items in the virtual inventory, notify them
-        if (savedInventories.containsKey(player.getUniqueId())) {
-            player.sendMessage(ChatColor.YELLOW + "You have items waiting in your /deathinv.");
+        String[] args = event.getMessage().substring(1).split(" ");
+
+        if (args[0].equalsIgnoreCase("deathinv")) {
+            event.setCancelled(true);
+            if (!deathInventories.containsKey(player.getUniqueId()) || !canClaimItems(player)) {
+                player.sendMessage(ChatColor.RED + "You cannot claim your inventory yet!");
+                return;
+            }
+            // If a second argument is provided, check if it's a valid player's name and if the player was hit recently
+            if (args.length > 1) {
+                Player target = Bukkit.getPlayerExact(args[1]);
+                if (target == null || !deathTimestamps.containsKey(target.getUniqueId()) || !wasHitRecently(target)) {
+                    player.sendMessage(ChatColor.RED + "You cannot claim that player's inventory.");
+                    return;
+                }
+                openInventory(player, deathInventories.get(target.getUniqueId()));
+            } else {
+                openInventory(player, deathInventories.get(player.getUniqueId()));
+            }
+        } else if (args[0].equalsIgnoreCase("deathinvall")) {
+            event.setCancelled(true);
+            if (!deathInventories.containsKey(player.getUniqueId()) || !canClaimItems(player)) {
+                player.sendMessage(ChatColor.RED + "You cannot recover your items yet!");
+                return;
+            }
+            recoverAllItems(player);
         }
     }
 
-    @Override
-    public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
-        if (!(sender instanceof Player)) {
-            sender.sendMessage("Only players can use this command.");
-            return true;
+    private boolean canClaimItems(Player player) {
+        // Ensure 15 seconds have passed since death
+        long deathTime = deathTimestamps.getOrDefault(player.getUniqueId(), 0L);
+        return (System.currentTimeMillis() - deathTime) >= 15000;
+    }
+
+    private boolean wasHitRecently(Player player) {
+        // Check if the player was hit in the last 60 seconds
+        long lastHitTime = deathTimestamps.getOrDefault(player.getUniqueId(), 0L);
+        return (System.currentTimeMillis() - lastHitTime) <= 60000;
+    }
+
+    private void openInventory(Player player, ItemStack[] contents) {
+        Inventory inventory = Bukkit.createInventory(null, 54, "Death Inventory");
+        inventory.setContents(contents);
+        player.openInventory(inventory);
+    }
+
+    private void recoverAllItems(Player player) {
+        ItemStack[] contents = deathInventories.get(player.getUniqueId());
+        Inventory playerInv = player.getInventory();
+
+        for (ItemStack item : contents) {
+            if (item != null) {
+                HashMap<Integer, ItemStack> couldNotStore = playerInv.addItem(item);
+                if (!couldNotStore.isEmpty()) {
+                    // If some items could not be stored, put them back into the death inventory
+                    deathInventories.put(player.getUniqueId(), couldNotStore.values().toArray(new ItemStack[0]));
+                    player.sendMessage(ChatColor.RED + "Your inventory is full. Some items remain in your death inventory.");
+                    break;
+                }
+            }
         }
 
-        Player player = (Player) sender;
-        if (cmd.getName().equalsIgnoreCase("deathinv")) {
-            // Check if the player has a saved inventory
-            UUID targetUUID = args.length > 0 ? getServer().getPlayer(args[0]).getUniqueId() : player.getUniqueId();
-            ItemStack[] items = savedInventories.get(targetUUID);
+        // Clear the death inventory after all items have been recovered
+        deathInventories.remove(player.getUniqueId());
+    }
 
-            if (items == null) {
-                player.sendMessage(ChatColor.RED + "No items found in your death inventory.");
-                return true;
+    @EventHandler
+    public void onInventoryClick(InventoryClickEvent event) {
+        if (event.getView().getTitle().equals("Death Inventory")) {
+            // Prevent the moving of items not belonging to the player or from a different inventory
+            if (event.getClickedInventory() != event.getView().getTopInventory()) {
+                event.setCancelled(true);
             }
+        }
+    }
 
-            if (args.length > 0 && !canClaim(player, targetUUID)) {
-                player.sendMessage(ChatColor.RED + "You cannot claim this player's inventory.");
-                return true;
-            }
-
-            // Restore items to the player's inventory or keep in the virtual inv if full
-            giveItemsToPlayer(player, items);
-            savedInventories.remove(targetUUID);
-        } else if (cmd.getName().equalsIgnoreCase("deathinvall")) {
-            // Claim all items and armor from the virtual inventory
+    @EventHandler
+    public void onInventoryClose(InventoryCloseEvent event) {
+        if (event.getView().getTitle().equals("Death Inventory")) {
+            // Update the saved inventory when the death inventory is closed
+            Inventory closedInventory = event.getInventory();
+            Player player = (Player) event.getPlayer();
             UUID playerUUID = player.getUniqueId();
-            ItemStack[] items = savedInventories.get(playerUUID);
 
-            if (items == null) {
-                player.sendMessage(ChatColor.RED + "No items found in your death inventory.");
-                return true;
+            // Clone the inventory contents to prevent reference issues
+            ItemStack[] itemsToSave = new ItemStack[closedInventory.getSize()];
+            ItemStack[] contents = closedInventory.getContents();
+            for (int i = 0; i < contents.length; i++) {
+                if (contents[i] != null) {
+                    itemsToSave[i] = new ItemStack(contents[i]);
+                }
             }
 
-            // Restore items and apply armor to the player
-            giveItemsToPlayer(player, items);
-            savedInventories.remove(playerUUID);
+            // Update the inventory for the player
+            deathInventories.put(playerUUID, itemsToSave);
         }
-
-        return true;
-    }
-
-    private void giveItemsToPlayer(Player player, ItemStack[] items) {
-        HashMap<Integer, ItemStack> notStored = player.getInventory().addItem(items);
-        if (!notStored.isEmpty()) {
-            notStored.values().forEach(item -> player.getWorld().dropItemNaturally(player.getLocation(), item));
-        }
-    }
-
-    private boolean canClaim(Player claimer, UUID deadPlayerUUID) {
-        long lastDamageTime = lastDamageTimes.getOrDefault(deadPlayerUUID, 0L);
-        // Allow claim if the claimer is the dead player or if the dead player was damaged in the last minute
-        return claimer.getUniqueId().equals(deadPlayerUUID) || (System.currentTimeMillis() - lastDamageTime) <= 60000;
     }
 }
